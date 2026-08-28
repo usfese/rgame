@@ -1,0 +1,13 @@
+[package]
+name = "rgame"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ash = { version = "0.38.0+1.3.281", default-features = false, features = [
+    "linked",
+    "debug",
+    "std",
+] }
+ash-window = "0.13.0"
+winit = { version = "0.30.13", features = ["rwh_06"] }
