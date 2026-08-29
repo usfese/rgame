@@ -4,6 +4,13 @@ const INVALID: u32 = u32::MAX;
 
 pub trait Component: Any + Send + Sync {}
 
+pub trait ErasedStorage: Any + Send + Sync {
+    fn remove_entity(&mut self, entity: EntityId);
+    fn as_any(&self) -> &dyn Any;
+    fn as_mut_any(&mut self) -> &mut dyn Any;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
 pub struct Storage<T: Component> {
     sparse: Vec<u32>,
     entities: Vec<EntityId>,
@@ -11,14 +18,14 @@ pub struct Storage<T: Component> {
 }
 
 impl<T: Component> Storage<T> {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             sparse: Vec::new(),
             entities: Vec::new(),
             data: Vec::new(),
         }
     }
-    fn index_of(&self, entity: EntityId) -> Option<usize> {
+    pub fn index_of(&self, entity: EntityId) -> Option<usize> {
         let slot = entity.slot() as usize;
         let &index = self.sparse.get(slot)?;
         if index == INVALID {
@@ -30,11 +37,11 @@ impl<T: Component> Storage<T> {
         }
         Some(index)
     }
-    fn contains(&self, entity: EntityId) -> bool {
+    pub fn contains(&self, entity: EntityId) -> bool {
         self.index_of(entity).is_some()
     }
 
-    fn insert(&mut self, entity: EntityId, component: T) {
+    pub fn insert(&mut self, entity: EntityId, component: T) {
         let slot = entity.slot() as usize;
         if self.sparse.len() <= slot {
             let new_len = (self.sparse.len() * 2).max(slot + 1);
@@ -49,5 +56,38 @@ impl<T: Component> Storage<T> {
         self.sparse[slot] = index as u32;
         self.entities.push(entity);
         self.data.push(component);
+    }
+    pub fn get(&self, entity: EntityId) -> Option<&T> {
+        let index = self.index_of(entity)?;
+        Some(&self.data[index])
+    }
+    pub fn get_mut(&mut self, entity: EntityId) -> Option<&mut T> {
+        let index = self.index_of(entity)?;
+        Some(&mut self.data[index])
+    }
+}
+
+impl<T: Component> ErasedStorage for Storage<T> {
+    fn remove_entity(&mut self, entity: EntityId) {
+        let Some(index) = self.index_of(entity) else {
+            return;
+        };
+        let last = self.data.len() - 1;
+        self.sparse[entity.slot() as usize] = INVALID;
+        self.entities.swap_remove(index);
+        self.data.swap_remove(index);
+        if index != last {
+            let moved_entity = self.entities[index];
+            self.sparse[moved_entity.slot() as usize] = index as u32;
+        }
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_mut_any(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
     }
 }
