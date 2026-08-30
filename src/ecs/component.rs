@@ -1,17 +1,32 @@
+//! ECS系统的组件模块。
+//!
+//! 包含Component
 use crate::ecs::entity::{self, EntityId};
 use std::any::Any;
 const INVALID: u32 = u32::MAX;
 
+/// ECS 组件。
+///
+/// 组件是附加到实体上的数据，用于描述实体的状态。
+/// 每种组件类型在 [`crate::ecs::world::World`] 中拥有独立的存储。
 pub trait Component: Any + Send + Sync {}
 
-pub trait ErasedStorage: Any + Send + Sync {
+pub(crate) trait ErasedStorage: Any + Send + Sync {
     fn remove_entity(&mut self, entity: EntityId);
     fn as_any(&self) -> &dyn Any;
     fn as_mut_any(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
-pub struct Storage<T: Component> {
+/// 用于存储同一类型组件的稠密存储结构。
+/// 采用 Sparse Set 模式，通过实体的 `slot` 快速定位组件。
+///
+/// - `sparse`：以实体的 `slot` 为索引，存储对应的 `dense_index`。
+/// - `entities`：以 `dense_index` 为索引，存储对应的 [`EntityId`]。
+/// - `data`：以 `dense_index` 为索引，存储实际的组件数据。
+///
+/// `entities` 和 `data` 始终保持一一对应，具有相同的长度。
+pub(crate) struct Storage<T: Component> {
     sparse: Vec<u32>,
     entities: Vec<EntityId>,
     data: Vec<T>,
@@ -26,25 +41,25 @@ impl<T: Component> Storage<T> {
         }
     }
 
-    pub fn index_of(&self, entity: EntityId) -> Option<usize> {
+    pub fn dense_index_of(&self, entity: EntityId) -> Option<usize> {
         let slot = entity.slot() as usize;
-        let &index = self.sparse.get(slot)?;
+        let &dense_index = self.sparse.get(slot)?;
 
-        if index == INVALID {
+        if dense_index == INVALID {
             return None;
         }
 
-        let index = index as usize;
+        let dense_index = dense_index as usize;
 
-        if *self.entities.get(index)? != entity {
+        if *self.entities.get(dense_index)? != entity {
             return None;
         }
 
-        Some(index)
+        Some(dense_index)
     }
 
     pub fn contains(&self, entity: EntityId) -> bool {
-        self.index_of(entity).is_some()
+        self.dense_index_of(entity).is_some()
     }
 
     pub fn insert(&mut self, entity: EntityId, component: T) {
@@ -55,80 +70,63 @@ impl<T: Component> Storage<T> {
             self.sparse.resize(new_len, INVALID);
         }
 
-        if let Some(index) = self.index_of(entity) {
-            self.data[index] = component;
+        if let Some(dense_index) = self.dense_index_of(entity) {
+            self.data[dense_index] = component;
             return;
         }
 
-        let index = self.data.len();
-        self.sparse[slot] = index as u32;
+        let dense_index = self.data.len();
+        self.sparse[slot] = dense_index as u32;
         self.entities.push(entity);
         self.data.push(component);
     }
 
     pub fn get(&self, entity: EntityId) -> Option<&T> {
-        let index = self.index_of(entity)?;
-        Some(&self.data[index])
+        let dense_index = self.dense_index_of(entity)?;
+        Some(&self.data[dense_index])
     }
 
     pub fn get_mut(&mut self, entity: EntityId) -> Option<&mut T> {
-        let index = self.index_of(entity)?;
-        Some(&mut self.data[index])
+        let dense_index = self.dense_index_of(entity)?;
+        Some(&mut self.data[dense_index])
     }
 
     pub fn remove(&mut self, entity: EntityId) -> Option<T> {
-        let slot = entity.slot() as usize;
-
-        if slot >= self.sparse.len() {
-            return None;
-        }
-
-        let index = self.sparse[slot] as usize;
-
-        if index == INVALID as usize {
-            return None;
-        }
-
-        if self.entities[index] != entity {
-            return None;
-        }
+        let dense_index = self.dense_index_of(entity)?;
 
         let last_index = self.data.len() - 1;
 
-        self.entities.swap_remove(index);
-        let component = self.data.swap_remove(index);
+        self.entities.swap_remove(dense_index);
+        let component = self.data.swap_remove(dense_index);
 
-        if index != last_index {
-            let moved_entity = self.entities[index];
-            self.sparse[moved_entity.slot() as usize] = index as u32;
+        if dense_index != last_index {
+            let moved_entity = self.entities[dense_index];
+            self.sparse[moved_entity.slot() as usize] = dense_index as u32;
         }
 
-        self.sparse[slot] = INVALID;
+        self.sparse[entity.slot() as usize] = INVALID;
 
         Some(component)
     }
 }
 
 impl<T: Component> ErasedStorage for Storage<T> {
+    #[inline]
     fn remove_entity(&mut self, entity: EntityId) {
-        let Some(index) = self.index_of(entity) else {
-            return;
-        };
-        let last = self.data.len() - 1;
-        self.sparse[entity.slot() as usize] = INVALID;
-        self.entities.swap_remove(index);
-        self.data.swap_remove(index);
-        if index != last {
-            let moved_entity = self.entities[index];
-            self.sparse[moved_entity.slot() as usize] = index as u32;
-        }
+        self.remove(entity);
     }
+
+    #[inline]
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    #[inline]
     fn as_mut_any(&mut self) -> &mut dyn Any {
         self
     }
+
+    #[inline]
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }

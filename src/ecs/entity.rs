@@ -1,3 +1,6 @@
+//! ECS系统的实体模块。
+//!
+//! 包含[`EntityId`]。
 const SLOT_BITS: u32 = 20;
 const GENERATION_BITS: u32 = 12;
 
@@ -10,7 +13,23 @@ use std::collections::VecDeque;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// 实体ID
+///
+/// 在同一个[`crate::ecs::world::World`]中一个实体与一个EntityID一一对应。
 pub struct EntityId(u32);
+// EntityId 使用一个 u32 表示，并划分为 generation 和 slot 两部分：
+// 高 12 位为 generation，低 20 位为 slot。
+//
+// slot 用于定位实体在 EntityManager 中的存储位置。
+// 当实体被销毁时，其 slot 会被回收，并递增该 slot 对应的 generation。
+// 之后创建的新实体可以复用这个 slot，但会获得新的 generation，
+// 因此新旧实体具有不同的 EntityId。
+//
+// generation 用于区分同一 slot 在不同生命周期中的实体，
+// 防止旧的 EntityId 在实体被销毁并复用 slot 后错误地访问新实体。
+//
+// 将 slot 限制为 20 位可以控制 EntityId 可使用的 slot 数量，
+// 从而限制 Storage 中 sparse 数组的最大长度。
 
 impl EntityId {
     #[inline]
@@ -22,12 +41,12 @@ impl EntityId {
     }
 
     #[inline]
-    pub const fn slot(self) -> u32 {
+    pub(crate) const fn slot(self) -> u32 {
         self.0 & SLOT_MASK
     }
 
     #[inline]
-    pub const fn generation(self) -> u32 {
+    pub(crate) const fn generation(self) -> u32 {
         (self.0 >> SLOT_BITS) & GENERATION_MASK
     }
 
@@ -37,9 +56,9 @@ impl EntityId {
     }
 }
 
-pub struct EntityManager {
-    generations: Vec<u16>,
-    free: VecDeque<u32>,
+pub(crate) struct EntityManager {
+    generations: Vec<u16>, // 各slot的generation数
+    free: VecDeque<u32>,   // 空闲的slot
     entity_count: usize,
 }
 
@@ -52,6 +71,7 @@ impl EntityManager {
         }
     }
 
+    /// 创建新实体
     pub fn spawn(&mut self) -> EntityId {
         self.entity_count += 1;
 
@@ -77,6 +97,7 @@ impl EntityManager {
         EntityId::new(slot as u32, 0)
     }
 
+    /// 销毁实体
     pub fn destroy(&mut self, entity: EntityId) -> bool {
         let slot = entity.slot() as usize;
 

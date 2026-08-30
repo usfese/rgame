@@ -1,3 +1,5 @@
+//! 游戏模块。
+//! 包含[`Game`]。
 use crate::renderer::Renderer;
 use winit::{
     application::ApplicationHandler,
@@ -6,6 +8,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+/// 表示游戏的struct。
 pub struct Game {
     name: String,
     is_running: bool,
@@ -43,6 +46,7 @@ impl Game {
     }
 }
 
+// 和winit库有关的代码
 impl ApplicationHandler for Game {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let attributes = Window::default_attributes()

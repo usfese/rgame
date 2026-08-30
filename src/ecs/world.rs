@@ -1,3 +1,7 @@
+//! ECS系统的世界模块。
+//!
+//! 包含[`World`]。
+
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
@@ -8,7 +12,7 @@ use crate::ecs::{
     entity::{self, *},
 };
 
-pub struct ComponentRegistry {
+pub(crate) struct ComponentRegistry {
     storages: HashMap<TypeId, Box<dyn ErasedStorage>>,
 }
 
@@ -19,18 +23,21 @@ impl ComponentRegistry {
         }
     }
 
+    /// 获取指定Component类型的Storage引用。
     pub fn get<T: Component>(&self) -> Option<&Storage<T>> {
         self.storages
             .get(&TypeId::of::<T>())
             .and_then(|storage| storage.as_any().downcast_ref::<Storage<T>>())
     }
 
+    /// 获取指定Component类型的Storage可变引用。
     pub fn get_mut<T: Component>(&mut self) -> Option<&mut Storage<T>> {
         self.storages
             .get_mut(&TypeId::of::<T>())
             .and_then(|storage| storage.as_mut_any().downcast_mut::<Storage<T>>())
     }
 
+    /// 获取指定类型的 Storage，不存在则创建。
     pub fn get_or_insert<T: Component>(&mut self) -> &mut Storage<T> {
         let type_id = TypeId::of::<T>();
 
@@ -46,11 +53,15 @@ impl ComponentRegistry {
         self.storages.contains_key(&TypeId::of::<T>())
     }
 
+    /// 移除指定类型的 Storage，并返回它
+    /// 会删除该类型的所有组件
     pub fn remove<T: Component>(&mut self) -> Option<Storage<T>> {
         self.storages
             .remove(&TypeId::of::<T>())
             .map(|storage| *storage.into_any().downcast::<Storage<T>>().unwrap())
     }
+
+    /// 从所有 Storage 中移除指定实体的组件。
     pub fn remove_entity(&mut self, entity: EntityId) {
         for storage in self.storages.values_mut() {
             storage.remove_entity(entity);
@@ -64,6 +75,8 @@ impl Default for ComponentRegistry {
     }
 }
 
+/// 游戏世界结构体。
+/// 负责管理[`EntityId`]和[`Component`]。
 pub struct World {
     entities: EntityManager,
     components: ComponentRegistry,
@@ -77,10 +90,12 @@ impl World {
         }
     }
 
+    /// 创建新的实体，实体以[`EntityId`]形式返回。
     pub fn spawn(&mut self) -> EntityId {
         self.entities.spawn()
     }
 
+    /// 销毁世界中id为`entity`的实体，并删除有关的所有组件
     pub fn despawn(&mut self, entity: EntityId) -> bool {
         if !self.entities.is_alive(entity) {
             return false;
@@ -90,6 +105,10 @@ impl World {
         true
     }
 
+    /// 为世界中的`entity`实体添加组件`component`。如果实体已拥有该类型的组件，则替换原有组件。
+    ///
+    /// # Note
+    /// 对于给定的组件类型，一个实体至多拥有一个组件实例。
     pub fn insert<T: Component>(&mut self, entity: EntityId, component: T) {
         if self.entities.is_alive(entity) {
             self.components
@@ -124,6 +143,7 @@ impl World {
         self.components.get_mut()?.get_mut(entity)
     }
 
+    /// 删除实体的一个组件
     pub fn remove_component<T: Component>(&mut self, entity: EntityId) -> Option<T> {
         if !self.is_alive(entity) {
             return None;
