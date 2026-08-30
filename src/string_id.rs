@@ -74,3 +74,126 @@ impl StringId {
         Self(value)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::thread;
+
+    #[test]
+    fn same_string_has_same_id() {
+        let a = StringId::new("hello");
+        let b = StringId::new("hello");
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_strings_have_different_ids() {
+        let a = StringId::new("hello");
+        let b = StringId::new("world");
+
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn as_str_returns_original_string() {
+        let id = StringId::new("hello");
+
+        assert_eq!(id.as_str(), "hello");
+    }
+
+    #[test]
+    fn string_can_be_interned_multiple_times() {
+        let a = StringId::new("hello");
+        let b = StringId::new("hello");
+        let c = StringId::new("hello");
+
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+
+        assert_eq!(a.as_str(), "hello");
+    }
+
+    #[test]
+    fn u32_conversion_round_trip() {
+        let id = StringId::new("hello");
+
+        let value = id.as_u32();
+        let restored = StringId::from_u32(value);
+
+        assert_eq!(id, restored);
+        assert_eq!(restored.as_str(), "hello");
+    }
+
+    #[test]
+    fn string_id_can_be_used_as_hash_map_key() {
+        let player = StringId::new("player");
+        let enemy = StringId::new("enemy");
+
+        let mut map = HashMap::new();
+
+        map.insert(player, 100);
+        map.insert(enemy, 200);
+
+        assert_eq!(map.get(&player), Some(&100));
+        assert_eq!(map.get(&enemy), Some(&200));
+    }
+
+    #[test]
+    fn empty_string_works() {
+        let id = StringId::new("");
+
+        assert_eq!(id.as_str(), "");
+    }
+
+    #[test]
+    fn unicode_string_works() {
+        let id = StringId::new("你好，世界");
+
+        assert_eq!(id.as_str(), "你好，世界");
+    }
+
+    #[test]
+    fn long_string_works() {
+        let value = "a".repeat(10_000);
+
+        let id = StringId::new(&value);
+
+        assert_eq!(id.as_str(), value);
+    }
+
+    #[test]
+    fn different_strings_get_stable_ids() {
+        let values = ["apple", "banana", "orange", "player", "enemy", "component"];
+
+        let ids: Vec<_> = values.iter().map(|value| StringId::new(value)).collect();
+
+        for (i, &id) in ids.iter().enumerate() {
+            assert_eq!(id.as_str(), values[i]);
+        }
+
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                assert_ne!(ids[i], ids[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_interning_returns_same_id() {
+        let value = "concurrent_string";
+
+        let mut handles: Vec<_> = (0..16)
+            .map(|_| thread::spawn(move || StringId::new(value)))
+            .collect();
+
+        let first = handles.pop().unwrap().join().unwrap();
+
+        for handle in handles {
+            assert_eq!(handle.join().unwrap(), first);
+        }
+
+        assert_eq!(first.as_str(), value);
+    }
+}
