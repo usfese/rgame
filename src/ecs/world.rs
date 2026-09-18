@@ -10,6 +10,7 @@ use std::{
 use crate::ecs::{
     component::*,
     entity::{self, *},
+    system::{Query, QueryData},
 };
 
 pub(crate) struct ComponentRegistry {
@@ -151,6 +152,14 @@ impl World {
         let storage = self.components.get_mut::<T>()?;
 
         storage.remove(entity)
+    }
+
+    pub(crate) fn get_components(&self) -> &ComponentRegistry {
+        &self.components
+    }
+
+    pub fn query<D: QueryData>(&self) -> Query<'_, D> {
+        Query::new(self)
     }
 }
 
