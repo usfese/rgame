@@ -10,7 +10,7 @@ use std::{
 use crate::ecs::{
     component::*,
     entity::{self, *},
-    system::{Query, QueryData},
+    system::{Query, QueryData, QueryDataMut, QueryMut},
 };
 
 pub(crate) struct ComponentRegistry {
@@ -48,6 +48,21 @@ impl ComponentRegistry {
             .as_mut_any()
             .downcast_mut::<Storage<T>>()
             .unwrap()
+    }
+
+    /// 一次性获取多个不同组件类型的 Storage 可变引用。
+    ///
+    /// `type_ids` 中不能有重复项；调用方需要先检查，否则
+    /// [`std::collections::HashMap::get_disjoint_mut`] 会 panic。
+    pub fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        type_ids: [TypeId; N],
+    ) -> [Option<&mut dyn ErasedStorage>; N] {
+        let keys: [&TypeId; N] = std::array::from_fn(|index| &type_ids[index]);
+
+        self.storages
+            .get_disjoint_mut(keys)
+            .map(|storage| storage.map(|storage| &mut **storage))
     }
 
     pub fn contains<T: Component>(&self) -> bool {
@@ -160,6 +175,18 @@ impl World {
 
     pub fn query<D: QueryData>(&self) -> Query<'_, D> {
         Query::new(self)
+    }
+
+    pub(crate) fn components_mut(&mut self) -> &mut ComponentRegistry {
+        &mut self.components
+    }
+
+    /// 创建一次可变查询。
+    ///
+    /// 查询持有 `&mut World`，因此查询存活期间不能修改世界结构
+    /// （spawn/despawn/insert/remove）。
+    pub(crate) fn query_mut<D: QueryDataMut>(&mut self) -> QueryMut<'_, D> {
+        QueryMut::new(self)
     }
 }
 

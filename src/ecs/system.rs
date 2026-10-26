@@ -1,17 +1,20 @@
 //! ECS 系统的查询模块。
 //!
-//! 包含 [`QueryData`]、[`Query`] 与 [`QueryIter`]。
+//! 包含：
+//! - 只读查询：`QueryData`、`Query`、`QueryIter`；
+//! - 可变查询：`QueryDataMut`、`QueryMut`。
 //!
-//! 目前的 [`Query`] 只支持只读查询（`&T`）。[`Query`] 内部只持有一个 `&World`，
-//! 在这样的前提下无法安全地交出 `&mut T`（多个 `&mut` 会违反借用规则，
-//! 强转则属于未定义行为），因此可变访问暂时仍通过 [`World::get_mut`] 完成。
+//! 只读 [`Query`] 只持有 `&World`，可以同时存在多个只读查询。
+//! 可变查询独占 `&mut World`，构造时一次性借出所需的 Storage，
+//! 支持 `&mut T`、`&T` 以及元组（如 `(&Velocity, &mut Position)`）。
+//! 同一个查询中不允许重复出现同一组件类型。
 
-use std::marker::PhantomData;
+use std::{any::TypeId, marker::PhantomData};
 
 use crate::ecs::{
-    component::{Component, ErasedStorage},
+    component::{Component, ErasedStorage, Storage},
     entity::EntityId,
-    world::World,
+    world::{ComponentRegistry, World},
 };
 
 /// 描述一次查询要取出的数据。
@@ -52,6 +55,103 @@ impl<T: Component> QueryData for &T {
             Some(storage) => vec![storage as &dyn ErasedStorage],
             None => Vec::new(),
         }
+    }
+}
+
+/// 描述一次可变查询要取出的数据。
+///
+/// 与只读的 [`QueryData`] 不同，可变查询在构造时独占 `&mut World`，
+/// 并通过 [`QueryDataMut::Fetch`] 一次性借出互不重叠的 Storage。
+///
+/// 目前的实现者：
+/// - `&mut T`：可变引用；
+/// - `&T`：在可变查询中只读；
+/// - 元组，如 `(&Velocity, &mut Position)`：要求实体同时拥有元组中的全部组件。
+///
+/// 同一个查询中不能重复出现同一个组件类型（包括 `&T` 与 `&mut T` 混用），
+/// 否则构造查询时会 panic。
+pub(crate) trait QueryDataMut {
+    /// 从单个实体上取出的数据。
+    type Item<'w>;
+
+    /// 查询构造时一次性借出的 Storage，或 Storage 元组。
+    type Fetch<'w>;
+
+    /// 该查询访问的组件类型。
+    fn type_id() -> TypeId;
+
+    /// 从组件注册表借出该查询需要的 Storage。
+    fn fetch<'w>(components: &'w mut ComponentRegistry) -> Option<Self::Fetch<'w>>;
+
+    /// 从调度器预先借出的单个 Storage 构造本查询的 Fetch。
+    ///
+    /// 供元组查询使用；叶子实现（`&T`、`&mut T`）直接包装对应的 Storage。
+    fn fetch_one<'w>(storage: &'w mut dyn ErasedStorage) -> Option<Self::Fetch<'w>>;
+
+    /// 取出 `entity` 上的数据；缺少任意一个组件时返回 [`None`]。
+    fn get<'a, 'w: 'a>(fetch: &'a mut Self::Fetch<'w>, entity: EntityId) -> Option<Self::Item<'a>>;
+
+    /// 本次查询用于驱动遍历的实体列表。
+    fn entities<'a, 'w: 'a>(fetch: &'a Self::Fetch<'w>) -> &'a [EntityId];
+}
+
+impl<T: Component> QueryDataMut for &mut T {
+    type Item<'w> = &'w mut T;
+    type Fetch<'w> = &'w mut Storage<T>;
+
+    #[inline]
+    fn type_id() -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    #[inline]
+    fn fetch<'w>(components: &'w mut ComponentRegistry) -> Option<Self::Fetch<'w>> {
+        components.get_mut::<T>()
+    }
+
+    #[inline]
+    fn fetch_one<'w>(storage: &'w mut dyn ErasedStorage) -> Option<Self::Fetch<'w>> {
+        storage.as_mut_any().downcast_mut::<Storage<T>>()
+    }
+
+    #[inline]
+    fn get<'a, 'w: 'a>(fetch: &'a mut Self::Fetch<'w>, entity: EntityId) -> Option<Self::Item<'a>> {
+        (*fetch).get_mut(entity)
+    }
+
+    #[inline]
+    fn entities<'a, 'w: 'a>(fetch: &'a Self::Fetch<'w>) -> &'a [EntityId] {
+        (**fetch).entities()
+    }
+}
+
+impl<T: Component> QueryDataMut for &T {
+    type Item<'w> = &'w T;
+    type Fetch<'w> = &'w mut Storage<T>;
+
+    #[inline]
+    fn type_id() -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    #[inline]
+    fn fetch<'w>(components: &'w mut ComponentRegistry) -> Option<Self::Fetch<'w>> {
+        components.get_mut::<T>()
+    }
+
+    #[inline]
+    fn fetch_one<'w>(storage: &'w mut dyn ErasedStorage) -> Option<Self::Fetch<'w>> {
+        storage.as_mut_any().downcast_mut::<Storage<T>>()
+    }
+
+    #[inline]
+    fn get<'a, 'w: 'a>(fetch: &'a mut Self::Fetch<'w>, entity: EntityId) -> Option<Self::Item<'a>> {
+        (*fetch).get(entity)
+    }
+
+    #[inline]
+    fn entities<'a, 'w: 'a>(fetch: &'a Self::Fetch<'w>) -> &'a [EntityId] {
+        (**fetch).entities()
     }
 }
 
@@ -96,6 +196,82 @@ impl_query_data!(A, B, C, D, E, F, G, H, I);
 impl_query_data!(A, B, C, D, E, F, G, H, I, J);
 impl_query_data!(A, B, C, D, E, F, G, H, I, J, K);
 impl_query_data!(A, B, C, D, E, F, G, H, I, J, K, L);
+
+/// 检查可变查询中没有重复的组件类型。
+fn assert_distinct(type_ids: &[TypeId]) {
+    for (index, type_id) in type_ids.iter().enumerate() {
+        assert!(
+            !type_ids[index + 1..].contains(type_id),
+            "mutable query contains the same component type more than once"
+        );
+    }
+}
+
+macro_rules! impl_query_data_mut {
+    ($($T:ident => $fetch:ident => $index:tt),+) => {
+        impl<$($T: QueryDataMut),+> QueryDataMut for ($($T,)+) {
+            type Item<'w> = ($($T::Item<'w>,)+);
+            type Fetch<'w> = ($($T::Fetch<'w>,)+);
+
+            fn type_id() -> TypeId {
+                panic!("nested mutable query tuples are not supported")
+            }
+
+            fn fetch<'w>(
+                components: &'w mut ComponentRegistry,
+            ) -> Option<Self::Fetch<'w>> {
+                let type_ids = [$($T::type_id()),+];
+                assert_distinct(&type_ids);
+
+                let [$($fetch),+] = components.get_disjoint_mut(type_ids);
+
+                Some(($($T::fetch_one($fetch?)?,)+))
+            }
+
+            fn fetch_one<'w>(
+                _storage: &'w mut dyn ErasedStorage,
+            ) -> Option<Self::Fetch<'w>> {
+                panic!("nested mutable query tuples are not supported")
+            }
+
+            fn get<'a, 'w: 'a>(
+                fetch: &'a mut Self::Fetch<'w>,
+                entity: EntityId,
+            ) -> Option<Self::Item<'a>> {
+                Some(($($T::get(&mut fetch.$index, entity)?,)+))
+            }
+
+            fn entities<'a, 'w: 'a>(
+                fetch: &'a Self::Fetch<'w>,
+            ) -> &'a [EntityId] {
+                let mut result: Option<&'a [EntityId]> = None;
+
+                $(
+                    let entities = $T::entities(&fetch.$index);
+
+                    if result.map_or(true, |current| entities.len() < current.len()) {
+                        result = Some(entities);
+                    }
+                )+
+
+                result.unwrap_or(&[])
+            }
+        }
+    };
+}
+
+impl_query_data_mut!(A => a => 0);
+impl_query_data_mut!(A => a => 0, B => b => 1);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4, F => f => 5);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4, F => f => 5, G => g => 6);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4, F => f => 5, G => g => 6, H => h => 7);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4, F => f => 5, G => g => 6, H => h => 7, I => i => 8);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4, F => f => 5, G => g => 6, H => h => 7, I => i => 8, J => j => 9);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4, F => f => 5, G => g => 6, H => h => 7, I => i => 8, J => j => 9, K => k => 10);
+impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e => 4, F => f => 5, G => g => 6, H => h => 7, I => i => 8, J => j => 9, K => k => 10, L => l => 11);
 
 /// 一次查询。
 ///
@@ -176,6 +352,69 @@ impl<'w, D: QueryData> Iterator for QueryIter<'w, D> {
     }
 }
 
+/// 一次可变查询。
+///
+/// 由 `World::query_mut` 创建，构造时独占 `World`，并一次性借出查询需要的
+/// 全部 Storage。因此查询存活期间不能 spawn/despawn、插入或删除组件。
+///
+/// 同一个查询中重复访问同一组件类型会在构造时 panic。
+pub(crate) struct QueryMut<'w, D: QueryDataMut> {
+    storages: Option<D::Fetch<'w>>,
+    entities: Vec<EntityId>,
+}
+
+impl<'w, D: QueryDataMut> QueryMut<'w, D> {
+    pub(crate) fn new(world: &'w mut World) -> Self {
+        let Some(storages) = D::fetch(world.components_mut()) else {
+            // 查询涉及的某个组件类型从未被插入过，结果必然为空。
+            return Self {
+                storages: None,
+                entities: Vec::new(),
+            };
+        };
+
+        let entities = D::entities(&storages).to_vec();
+
+        Self {
+            storages: Some(storages),
+            entities,
+        }
+    }
+
+    /// 取出实体 `entity` 上的数据，缺少任意一个查询组件时返回 [`None`]。
+    ///
+    /// 返回值借自查询自身，因此不能比 `&mut self` 活得更久。
+    pub fn get(&mut self, entity: EntityId) -> Option<D::Item<'_>> {
+        D::get(self.storages.as_mut()?, entity)
+    }
+
+    /// 遍历所有满足查询条件的实体。
+    ///
+    /// 回调中的引用只在本次调用内有效；如果需要在回调外保存结果，
+    /// 请保存拷贝而不是引用。
+    pub fn for_each<F>(self, mut f: F)
+    where
+        F: for<'a> FnMut(D::Item<'a>),
+    {
+        let Some(mut storages) = self.storages else {
+            return;
+        };
+
+        for entity in self.entities {
+            if let Some(item) = D::get(&mut storages, entity) {
+                f(item);
+            }
+        }
+    }
+
+    /// 本次查询的驱动实体列表。
+    ///
+    /// 结构变更在查询存活期间被禁止，因此这个列表是稳定的。
+    pub fn entities(&self) -> &[EntityId] {
+        &self.entities
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +435,14 @@ mod tests {
     }
 
     impl Component for Velocity {}
+
+    #[derive(Debug, PartialEq)]
+    struct Acceleration {
+        x: f32,
+        y: f32,
+    }
+
+    impl Component for Acceleration {}
 
     #[test]
     fn query_get_returns_borrowed_component() {
@@ -387,5 +634,366 @@ mod tests {
 
         assert_eq!(position.x, 1.0);
         assert_eq!(position.y, 2.0);
+    }
+
+    // ------------------------------------------------------------
+    // QueryMut
+    // ------------------------------------------------------------
+
+    #[test]
+    fn query_mut_get_modifies_component() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+
+        {
+            let mut query = world.query_mut::<&mut Position>();
+            let position = query.get(entity).unwrap();
+
+            position.x = 10.0;
+            position.y = 20.0;
+        }
+
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 10.0, y: 20.0 })
+        );
+    }
+
+    #[test]
+    fn query_mut_get_missing_component_returns_none() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        let mut query = world.query_mut::<&mut Position>();
+
+        assert!(query.get(entity).is_none());
+    }
+
+    #[test]
+    fn query_mut_get_on_dead_entity_returns_none() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+        world.despawn(entity);
+
+        let mut query = world.query_mut::<&mut Position>();
+
+        assert!(query.get(entity).is_none());
+    }
+
+    #[test]
+    fn query_mut_for_each_updates_all_entities() {
+        let mut world = World::new();
+
+        let entities: Vec<_> = (0..10).map(|_| world.spawn()).collect();
+
+        for &entity in &entities {
+            world.insert(entity, Position { x: 1.0, y: 2.0 });
+        }
+
+        world
+            .query_mut::<&mut Position>()
+            .for_each(|position| position.x += 1.0);
+
+        for &entity in &entities {
+            assert_eq!(world.get::<Position>(entity).unwrap().x, 2.0);
+        }
+    }
+
+    #[test]
+    fn query_mut_mixed_read_write() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+        world.insert(entity, Velocity { x: 3.0, y: 4.0 });
+
+        world
+            .query_mut::<(&Velocity, &mut Position)>()
+            .for_each(|(velocity, position)| {
+                position.x += velocity.x;
+                position.y += velocity.y;
+            });
+
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 4.0, y: 6.0 })
+        );
+        assert_eq!(
+            world.get::<Velocity>(entity),
+            Some(&Velocity { x: 3.0, y: 4.0 })
+        );
+    }
+
+    #[test]
+    fn query_mut_tuple_writes_multiple_components() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 0.0, y: 0.0 });
+        world.insert(entity, Velocity { x: 3.0, y: 4.0 });
+
+        world
+            .query_mut::<(&mut Position, &mut Velocity)>()
+            .for_each(|(position, velocity)| {
+                position.x = velocity.x;
+                position.y = velocity.y;
+                velocity.x = 0.0;
+                velocity.y = 0.0;
+            });
+
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 3.0, y: 4.0 })
+        );
+        assert_eq!(
+            world.get::<Velocity>(entity),
+            Some(&Velocity { x: 0.0, y: 0.0 })
+        );
+    }
+
+    #[test]
+    fn query_mut_skips_entities_missing_component() {
+        let mut world = World::new();
+
+        let a = world.spawn();
+        let b = world.spawn();
+
+        world.insert(a, Position { x: 1.0, y: 1.0 });
+        world.insert(b, Position { x: 2.0, y: 2.0 });
+        world.insert(b, Velocity { x: 1.0, y: 1.0 });
+
+        world
+            .query_mut::<(&Position, &mut Velocity)>()
+            .for_each(|(position, velocity)| {
+                velocity.x = position.x;
+            });
+
+        assert_eq!(world.get::<Position>(a), Some(&Position { x: 1.0, y: 1.0 }));
+        assert_eq!(world.get::<Velocity>(b), Some(&Velocity { x: 2.0, y: 1.0 }));
+    }
+
+    #[test]
+    fn query_mut_is_empty_when_component_never_inserted() {
+        let mut world = World::new();
+
+        world.spawn();
+        world.spawn();
+
+        let mut count = 0;
+
+        world.query_mut::<&mut Position>().for_each(|_| {
+            count += 1;
+        });
+
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn query_mut_entities_lists_driver_entities() {
+        let mut world = World::new();
+
+        let entities: Vec<_> = (0..3).map(|_| world.spawn()).collect();
+
+        for &entity in &entities {
+            world.insert(entity, Position { x: 1.0, y: 2.0 });
+        }
+
+        let query = world.query_mut::<&mut Position>();
+        let mut listed = query.entities().to_vec();
+        listed.sort_by_key(|entity| entity.as_u32());
+
+        let mut expected = entities.clone();
+        expected.sort_by_key(|entity| entity.as_u32());
+
+        assert_eq!(listed, expected);
+    }
+
+    #[test]
+    #[should_panic(expected = "same component type")]
+    fn query_mut_rejects_duplicate_component_types() {
+        let mut world = World::new();
+
+        world.spawn();
+
+        let _ = world.query_mut::<(&mut Position, &mut Position)>();
+    }
+
+    #[test]
+    fn query_mut_read_only_component() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+
+        {
+            let mut query = world.query_mut::<&Position>();
+            assert_eq!(query.get(entity), Some(&Position { x: 1.0, y: 2.0 }));
+        }
+
+        let mut sum = 0.0;
+
+        world.query_mut::<&Position>().for_each(|position| {
+            sum += position.x;
+        });
+
+        assert_eq!(sum, 1.0);
+    }
+
+    #[test]
+    fn query_mut_requires_all_tuple_components() {
+        let mut world = World::new();
+
+        let position_only = world.spawn();
+        let velocity_only = world.spawn();
+        let both = world.spawn();
+
+        world.insert(position_only, Position { x: 1.0, y: 2.0 });
+        world.insert(velocity_only, Velocity { x: 3.0, y: 4.0 });
+        world.insert(both, Position { x: 5.0, y: 6.0 });
+        world.insert(both, Velocity { x: 7.0, y: 8.0 });
+
+        let mut query = world.query_mut::<(&Position, &mut Velocity)>();
+
+        assert!(query.get(position_only).is_none());
+        assert!(query.get(velocity_only).is_none());
+
+        let (position, velocity) = query.get(both).unwrap();
+
+        assert_eq!(position.x, 5.0);
+        assert_eq!(position.y, 6.0);
+        assert_eq!(velocity.x, 7.0);
+        assert_eq!(velocity.y, 8.0);
+    }
+
+    #[test]
+    fn query_mut_three_component_tuple() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+        world.insert(entity, Velocity { x: 10.0, y: 20.0 });
+        world.insert(entity, Acceleration { x: 100.0, y: 200.0 });
+
+        world
+            .query_mut::<(&mut Position, &Velocity, &mut Acceleration)>()
+            .for_each(|(position, velocity, acceleration)| {
+                position.x += velocity.x;
+                position.y += velocity.y;
+                acceleration.x += velocity.y;
+            });
+
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 11.0, y: 22.0 })
+        );
+        assert_eq!(
+            world.get::<Acceleration>(entity),
+            Some(&Acceleration { x: 120.0, y: 200.0 })
+        );
+    }
+
+    #[test]
+    fn query_mut_uses_smallest_storage_as_driver() {
+        let mut world = World::new();
+        let entities: Vec<_> = (0..64).map(|_| world.spawn()).collect();
+
+        for (index, &entity) in entities.iter().enumerate() {
+            world.insert(
+                entity,
+                Position {
+                    x: index as f32,
+                    y: 0.0,
+                },
+            );
+        }
+
+        world.insert(entities[10], Velocity { x: 1.0, y: 2.0 });
+        world.insert(entities[40], Velocity { x: 3.0, y: 4.0 });
+
+        let mut count = 0;
+
+        world
+            .query_mut::<(&Position, &mut Velocity)>()
+            .for_each(|(position, velocity)| {
+                velocity.x = position.x;
+                count += 1;
+            });
+
+        assert_eq!(count, 2);
+        assert_eq!(world.get::<Velocity>(entities[10]).unwrap().x, 10.0);
+        assert_eq!(world.get::<Velocity>(entities[40]).unwrap().x, 40.0);
+    }
+
+    #[test]
+    fn query_mut_for_each_skips_despawned_entities() {
+        let mut world = World::new();
+        let entities: Vec<_> = (0..5).map(|_| world.spawn()).collect();
+
+        for &entity in &entities {
+            world.insert(entity, Position { x: 1.0, y: 2.0 });
+        }
+
+        world.despawn(entities[2]);
+
+        let mut count = 0;
+
+        world.query_mut::<&mut Position>().for_each(|_| {
+            count += 1;
+        });
+
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn query_mut_stale_entity_id_cannot_access_reused_entity() {
+        let mut world = World::new();
+
+        let old = world.spawn();
+        world.insert(old, Position { x: 1.0, y: 2.0 });
+        world.despawn(old);
+
+        let new = world.spawn();
+        world.insert(new, Position { x: 10.0, y: 20.0 });
+
+        let mut query = world.query_mut::<&mut Position>();
+
+        assert!(query.get(old).is_none());
+
+        let position = query.get(new).unwrap();
+
+        assert_eq!(position.x, 10.0);
+        assert_eq!(position.y, 20.0);
+    }
+
+    #[test]
+    fn query_mut_missing_one_component_storage_is_empty() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+
+        let mut count = 0;
+
+        world
+            .query_mut::<(&Position, &mut Velocity)>()
+            .for_each(|_| {
+                count += 1;
+            });
+
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "same component type")]
+    fn query_mut_rejects_mixed_duplicate_component_types() {
+        let mut world = World::new();
+
+        world.spawn();
+
+        let _ = world.query_mut::<(&Position, &mut Position)>();
     }
 }
