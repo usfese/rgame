@@ -31,8 +31,8 @@ impl StringInterner {
         id
     }
 
-    fn get(&self, id: StringId) -> &'static str {
-        self.strings[id.0 as usize]
+    fn get(&self, id: StringId) -> Option<&'static str> {
+        self.strings.get(id.0 as usize).copied()
     }
 }
 
@@ -61,17 +61,33 @@ impl StringId {
         interner.intern(value)
     }
 
+    /// 通过 [`StringId::new`] 取得该 id 对应的字符串。
+    ///
+    /// # Panics
+    /// `self` 不是由本进程 interner 分配的合法 id 时 panic。
     pub fn as_str(self) -> &'static str {
         let interner = interner().read().unwrap();
-        interner.get(self)
+        interner
+            .get(self)
+            .expect("StringId was not created by this process' interner")
     }
 
     pub const fn as_u32(self) -> u32 {
         self.0
     }
 
-    pub const fn from_u32(value: u32) -> Self {
-        Self(value)
+    /// 从原始 `u32` 恢复 [`StringId`]。
+    ///
+    /// 只有本进程 interner 已经分配过的编号才有效，其它值（例如跨进程
+    /// 保存下来的编号）返回 [`None`]。
+    pub fn from_u32(value: u32) -> Option<Self> {
+        let interner = interner().read().unwrap();
+
+        if (value as usize) < interner.strings.len() {
+            Some(Self(value))
+        } else {
+            None
+        }
     }
 }
 #[cfg(test)]
@@ -120,10 +136,16 @@ mod tests {
         let id = StringId::new("hello");
 
         let value = id.as_u32();
-        let restored = StringId::from_u32(value);
+        let restored = StringId::from_u32(value).unwrap();
 
         assert_eq!(id, restored);
         assert_eq!(restored.as_str(), "hello");
+    }
+
+    #[test]
+    fn from_u32_rejects_unknown_id() {
+        // interner 不可能分配到 u32::MAX 号。
+        assert_eq!(StringId::from_u32(u32::MAX), None);
     }
 
     #[test]

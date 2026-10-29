@@ -32,8 +32,12 @@ pub struct EntityId(u32);
 // 从而限制 Storage 中 sparse 数组的最大长度。
 
 impl EntityId {
+    /// 用 slot 和 generation 直接组装一个 [`EntityId`]。
+    ///
+    /// 仅供 [`EntityManager`] 和测试使用；正常代码应从 `World::spawn` 获取 ID。
+    /// 自行构造的 ID 不保证与 `EntityManager` 的内部状态一致。
     #[inline]
-    pub const fn new(slot: u32, generation: u32) -> Self {
+    pub(crate) const fn new(slot: u32, generation: u32) -> Self {
         debug_assert!(slot <= SLOT_MASK);
         debug_assert!(generation <= GENERATION_MASK);
 
@@ -73,15 +77,16 @@ impl EntityManager {
 
     /// 创建新实体
     pub fn spawn(&mut self) -> EntityId {
-        self.entity_count += 1;
-
         while let Some(slot) = self.free.pop_front() {
             let generation = self.generations[slot as usize];
 
+            // 防御性检查：generation 耗尽的 slot 不会被放回 `free`，
+            // 正常情况下走不到这里。
             if generation == INVALID_GENERATION {
                 continue;
             }
 
+            self.entity_count += 1;
             return EntityId::new(slot, generation as u32);
         }
 
@@ -93,6 +98,7 @@ impl EntityManager {
         );
 
         self.generations.push(0);
+        self.entity_count += 1;
 
         EntityId::new(slot as u32, 0)
     }
@@ -105,12 +111,16 @@ impl EntityManager {
             return false;
         };
 
-        if generation as u32 != entity.generation() {
+        // `INVALID_GENERATION` 是保留值，永远不对应活着的实体。
+        // 同时防止伪造的 EntityId 走到下面的计数递减导致下溢。
+        if generation == INVALID_GENERATION || generation as u32 != entity.generation() {
             return false;
         }
 
+        // generation 用尽后烧毁该 slot：不再复用，也不再回到 `free`。
         if generation == INVALID_GENERATION - 1 {
             self.generations[slot] = INVALID_GENERATION;
+            self.entity_count -= 1;
             return true;
         }
 
@@ -125,7 +135,9 @@ impl EntityManager {
     pub fn is_alive(&self, entity: EntityId) -> bool {
         self.generations
             .get(entity.slot() as usize)
-            .is_some_and(|&generation| generation as u32 == entity.generation())
+            .is_some_and(|&generation| {
+                generation != INVALID_GENERATION && generation as u32 == entity.generation()
+            })
     }
 
     #[inline]
@@ -284,6 +296,65 @@ mod tests {
         assert!(!manager.is_alive(first));
         assert!(!manager.is_alive(second));
         assert!(manager.is_alive(third));
+    }
+
+    #[test]
+    fn generation_exhaustion_keeps_entity_count_consistent() {
+        let mut manager = EntityManager::new();
+
+        // 同一个 slot 从 generation 0 用到最后一个可用 generation。
+        // 最后一次 destroy 会烧毁该 slot，实体计数必须同时归零。
+        for _ in 0..GENERATION_MASK {
+            let entity = manager.spawn();
+
+            assert!(manager.is_alive(entity));
+            assert!(manager.destroy(entity));
+        }
+
+        assert_eq!(manager.entity_count(), 0);
+    }
+
+    #[test]
+    fn burned_slot_is_not_reused() {
+        let mut manager = EntityManager::new();
+
+        for _ in 0..GENERATION_MASK {
+            let entity = manager.spawn();
+            manager.destroy(entity);
+        }
+
+        let next = manager.spawn();
+
+        // slot 0 已烧毁，新实体必须落到新的 slot 上。
+        assert_eq!(next.slot(), 1);
+        assert_eq!(next.generation(), 0);
+        assert!(manager.is_alive(next));
+        assert_eq!(manager.entity_count(), 1);
+    }
+
+    #[test]
+    fn forged_invalid_generation_is_never_alive() {
+        let mut manager = EntityManager::new();
+
+        // 未使用过的 slot。
+        assert!(!manager.is_alive(EntityId::new(0, INVALID_GENERATION as u32)));
+
+        // 把 slot 0 烧毁。
+        let entity = manager.spawn();
+        assert!(manager.destroy(entity));
+
+        for _ in 0..GENERATION_MASK - 1 {
+            let entity = manager.spawn();
+            assert!(manager.destroy(entity));
+        }
+
+        let burned = EntityId::new(0, INVALID_GENERATION as u32);
+
+        assert!(!manager.is_alive(burned));
+
+        // 保留 generation 的 destroy 必须被拒绝，否则实体计数会下溢。
+        assert!(!manager.destroy(burned));
+        assert_eq!(manager.entity_count(), 0);
     }
 
     #[test]

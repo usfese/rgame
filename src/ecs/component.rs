@@ -14,11 +14,6 @@ pub trait Component: Any + Send + Sync {}
 pub(crate) trait ErasedStorage: Any + Send + Sync {
     fn remove_entity(&mut self, entity: EntityId);
 
-    /// 该 Storage 中所有实体的列表（稠密顺序）。
-    ///
-    /// 供查询遍历时挑选驱动 Storage 使用。
-    fn entities(&self) -> &[EntityId];
-
     fn as_any(&self) -> &dyn Any;
     fn as_mut_any(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
@@ -66,6 +61,12 @@ impl<T: Component> Storage<T> {
 
     pub fn contains(&self, entity: EntityId) -> bool {
         self.dense_index_of(entity).is_some()
+    }
+
+    /// 该 Storage 中所有实体的列表（稠密顺序）。
+    #[inline]
+    pub fn entities(&self) -> &[EntityId] {
+        &self.entities
     }
 
     pub fn insert(&mut self, entity: EntityId, component: T) {
@@ -120,11 +121,6 @@ impl<T: Component> ErasedStorage for Storage<T> {
     #[inline]
     fn remove_entity(&mut self, entity: EntityId) {
         self.remove(entity);
-    }
-
-    #[inline]
-    fn entities(&self) -> &[EntityId] {
-        &self.entities
     }
 
     #[inline]

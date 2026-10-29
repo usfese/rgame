@@ -1,15 +1,16 @@
 //! ECS 系统的查询模块。
 //!
 //! 包含：
-//! - 只读查询：`QueryData`、`Query`、`QueryIter`；
+//! - 只读查询：`QueryData`、`Query`、`QueryIter`、`QueryIterWithEntities`；
 //! - 可变查询：`QueryDataMut`、`QueryMut`。
 //!
-//! 只读 [`Query`] 只持有 `&World`，可以同时存在多个只读查询。
+//! 只读 [`Query`] 只借用 `&World` 并持有从中借出的 Storage 引用，
+//! 可以同时存在多个只读查询。
 //! 可变查询独占 `&mut World`，构造时一次性借出所需的 Storage，
 //! 支持 `&mut T`、`&T` 以及元组（如 `(&Velocity, &mut Position)`）。
-//! 同一个查询中不允许重复出现同一组件类型。
+//! 同一个可变查询中不允许重复出现同一组件类型；只读查询允许重复类型。
 
-use std::{any::TypeId, marker::PhantomData};
+use std::any::TypeId;
 
 use crate::ecs::{
     component::{Component, ErasedStorage, Storage},
@@ -23,38 +24,52 @@ use crate::ecs::{
 /// - `&T`：取出实体上组件 `T` 的共享引用。
 /// - 元组，如 `(&Position, &Velocity)`：要求实体同时拥有元组中的全部组件。
 ///
+/// 只读查询允许同一个组件类型在元组中重复出现，此时会得到同一个组件的多个
+/// 共享引用（可变查询则会拒绝重复类型）。
+///
 /// [`QueryData::Item`] 是带生命周期参数的 GAT：`Item<'w>` 中的 `'w` 只与 [`World`] 的
 /// 借用绑定，与 `Self` 自身的生命周期无关。因此 `Query<(&'a T, &'b U)>` 里的 `'a`、`'b`
 /// 可以随便填（甚至是 `'static`），取出来的数据依然只在 `World` 被借用期间有效。
-pub trait QueryData {
+pub(crate) trait QueryData {
     /// 从单个实体上取出的数据。
     type Item<'w>;
 
-    /// 取出 `entity` 上的数据；只要缺少任意一个组件就返回 [`None`]。
-    fn get<'w>(world: &'w World, entity: EntityId) -> Option<Self::Item<'w>>;
-
-    /// 本次查询会用到的所有 Storage。
+    /// 查询构造时一次性借出的 Storage，或 Storage 元组。
     ///
-    /// 用来挑选遍历时的驱动 Storage，同时也用来检查同一个组件类型是否被重复查询。
-    fn storages<'w>(world: &'w World) -> Vec<&'w dyn ErasedStorage>;
+    /// 只读查询的 Fetch 只包含共享引用，因此要求 [`Copy`]：
+    /// [`Query`] 可以把它复制给任意多个 [`QueryIter`]。
+    type Fetch<'w>: Copy;
+
+    /// 借出本次查询需要的全部 Storage；任一组件类型尚无 Storage 时返回 [`None`]。
+    fn fetch<'w>(world: &'w World) -> Option<Self::Fetch<'w>>;
+
+    /// 从已借出的 Storage 取出 `entity` 上的数据；缺少任意一个组件时返回 [`None`]。
+    fn get<'w>(fetch: Self::Fetch<'w>, entity: EntityId) -> Option<Self::Item<'w>>;
+
+    /// 本次查询用于驱动遍历的实体列表。
+    ///
+    /// 返回切片的生命周期直接绑定到 [`World`] 的借用，而不是 `fetch` 自身的借用。
+    fn entities<'w>(fetch: Self::Fetch<'w>) -> &'w [EntityId];
 }
 
 /// 组件 `T` 的共享引用查询。
 impl<T: Component> QueryData for &T {
     type Item<'w> = &'w T;
+    type Fetch<'w> = &'w Storage<T>;
 
     #[inline]
-    fn get<'w>(world: &'w World, entity: EntityId) -> Option<Self::Item<'w>> {
-        world.get::<T>(entity)
+    fn fetch<'w>(world: &'w World) -> Option<Self::Fetch<'w>> {
+        world.get_components().get::<T>()
     }
 
-    fn storages<'w>(world: &'w World) -> Vec<&'w dyn ErasedStorage> {
-        // 该类型的 Storage 还不存在（从未插入过任何该组件）时返回空列表，
-        // 此时查询既取不到数据，也不会遍历任何实体。
-        match world.get_components().get::<T>() {
-            Some(storage) => vec![storage as &dyn ErasedStorage],
-            None => Vec::new(),
-        }
+    #[inline]
+    fn get<'w>(fetch: Self::Fetch<'w>, entity: EntityId) -> Option<Self::Item<'w>> {
+        fetch.get(entity)
+    }
+
+    #[inline]
+    fn entities<'w>(fetch: Self::Fetch<'w>) -> &'w [EntityId] {
+        fetch.entities()
     }
 }
 
@@ -156,46 +171,55 @@ impl<T: Component> QueryDataMut for &T {
 }
 
 macro_rules! impl_query_data {
-    ($($T:ident),+) => {
+    ($($T:ident => $index:tt),+) => {
         impl<$($T: QueryData),+> QueryData for ($($T,)+) {
             type Item<'w> = ($($T::Item<'w>,)+);
+            type Fetch<'w> = ($($T::Fetch<'w>,)+);
+
+            fn fetch<'w>(world: &'w World) -> Option<Self::Fetch<'w>> {
+                Some(($($T::fetch(world)?,)+))
+            }
 
             fn get<'w>(
-                world: &'w World,
+                fetch: Self::Fetch<'w>,
                 entity: EntityId,
             ) -> Option<Self::Item<'w>> {
                 Some((
-                    $($T::get(world, entity)?,)+
+                    $($T::get(fetch.$index, entity)?,)+
                 ))
             }
 
-            fn storages<'w>(
-                world: &'w World,
-            ) -> Vec<&'w dyn ErasedStorage> {
-                let mut storages = Vec::new();
+            fn entities<'w>(
+                fetch: Self::Fetch<'w>,
+            ) -> &'w [EntityId] {
+                let mut result: Option<&'w [EntityId]> = None;
 
                 $(
-                    storages.extend($T::storages(world));
+                    let entities = $T::entities(fetch.$index);
+
+                    if result.map_or(true, |current| entities.len() < current.len()) {
+                        result = Some(entities);
+                    }
                 )+
 
-                storages
+                result.unwrap_or(&[])
             }
         }
     };
 }
 
-impl_query_data!(A);
-impl_query_data!(A, B);
-impl_query_data!(A, B, C);
-impl_query_data!(A, B, C, D);
-impl_query_data!(A, B, C, D, E);
-impl_query_data!(A, B, C, D, E, F);
-impl_query_data!(A, B, C, D, E, F, G);
-impl_query_data!(A, B, C, D, E, F, G, H);
-impl_query_data!(A, B, C, D, E, F, G, H, I);
-impl_query_data!(A, B, C, D, E, F, G, H, I, J);
-impl_query_data!(A, B, C, D, E, F, G, H, I, J, K);
-impl_query_data!(A, B, C, D, E, F, G, H, I, J, K, L);
+impl_query_data!(A => 0);
+impl_query_data!(A => 0, B => 1);
+impl_query_data!(A => 0, B => 1, C => 2);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8, J => 9);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8, J => 9, K => 10);
+impl_query_data!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8, J => 9, K => 10, L => 11);
 
 /// 检查可变查询中没有重复的组件类型。
 fn assert_distinct(type_ids: &[TypeId]) {
@@ -277,25 +301,30 @@ impl_query_data_mut!(A => a => 0, B => b => 1, C => c => 2, D => d => 3, E => e 
 ///
 /// 由 [`World::query`] 创建，只借用 `World` 的共享引用，
 /// 因此可以同时存在多个 `Query`（只读查询之间不会冲突）。
-pub struct Query<'w, D: QueryData> {
-    world: &'w World,
-    _marker: PhantomData<D>,
+pub(crate) struct Query<'w, D: QueryData> {
+    fetch: Option<D::Fetch<'w>>,
 }
 
 /// [`Query::iter`] 返回的迭代器。
 ///
-/// 内部持有一个驱动 Storage 的实体列表切片，遍历时用其余 Storage 做过滤。
-pub struct QueryIter<'w, D: QueryData> {
-    world: &'w World,
+/// 内部持有构造查询时借出的 Storage 和一个驱动 Storage 的实体列表切片，
+/// 遍历时用其余 Storage 做过滤。
+pub(crate) struct QueryIter<'w, D: QueryData> {
+    fetch: Option<D::Fetch<'w>>,
     entities: std::slice::Iter<'w, EntityId>,
-    _marker: PhantomData<D>,
+}
+
+/// [`Query::iter_with_entities`] 返回的迭代器。
+///
+/// 与 [`QueryIter`] 相同，但同时产出实体 ID。
+pub(crate) struct QueryIterWithEntities<'w, D: QueryData> {
+    inner: QueryIter<'w, D>,
 }
 
 impl<'w, D: QueryData> Query<'w, D> {
     pub(crate) fn new(world: &'w World) -> Self {
         Self {
-            world,
-            _marker: PhantomData,
+            fetch: D::fetch(world),
         }
     }
 
@@ -304,31 +333,48 @@ impl<'w, D: QueryData> Query<'w, D> {
     /// 返回值的生命周期是 `'w`（`World` 的借用）而不是 `&self` 的借用，
     /// 因为查询本身只持有共享引用，可以复制出去。
     pub fn get(&self, entity: EntityId) -> Option<D::Item<'w>> {
-        D::get(self.world, entity)
+        D::get(self.fetch?, entity)
     }
 
     /// 遍历所有满足查询条件的实体。
     ///
     /// 结果中实体的顺序取决于驱动 Storage 内部的稠密数组顺序，不保证稳定。
     pub fn iter(&self) -> QueryIter<'w, D> {
-        QueryIter::new(self.world)
+        QueryIter::new(self.fetch)
+    }
+
+    /// 遍历所有满足查询条件的实体，同时产出实体 ID。
+    ///
+    /// 结果顺序与 [`Query::iter`] 相同。
+    pub fn iter_with_entities(&self) -> QueryIterWithEntities<'w, D> {
+        QueryIterWithEntities { inner: self.iter() }
     }
 }
 
 impl<'w, D: QueryData> QueryIter<'w, D> {
-    pub(crate) fn new(world: &'w World) -> Self {
+    pub(crate) fn new(fetch: Option<D::Fetch<'w>>) -> Self {
         // 选出实体最少的 Storage 作为驱动：遍历它，再用其它 Storage 过滤。
-        // 全部 Storage 都不存在时（组件从未被插入过）驱动列表为空，迭代结果也为空。
-        let entities: &'w [EntityId] = D::storages(world)
-            .into_iter()
-            .min_by_key(|storage| storage.entities().len())
-            .map_or(&[], |storage| storage.entities());
+        // 查询涉及的任一 Storage 不存在时（该组件从未被插入过）结果必然为空。
+        let entities: &'w [EntityId] = fetch.map_or(&[], D::entities);
 
         Self {
-            world,
+            fetch,
             entities: entities.iter(),
-            _marker: PhantomData,
         }
+    }
+
+    /// 取下一个匹配实体，同时返回它的 ID。
+    pub(crate) fn next_with_entity(&mut self) -> Option<(EntityId, D::Item<'w>)> {
+        let fetch = self.fetch?;
+
+        // 驱动 Storage 里可能存在缺少其它查询组件的实体，跳过它们。
+        for &entity in &mut self.entities {
+            if let Some(item) = D::get(fetch, entity) {
+                return Some((entity, item));
+            }
+        }
+
+        None
     }
 }
 
@@ -336,19 +382,24 @@ impl<'w, D: QueryData> Iterator for QueryIter<'w, D> {
     type Item = D::Item<'w>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // 驱动 Storage 里可能存在缺少其它查询组件的实体，跳过它们。
-        while let Some(&entity) = self.entities.next() {
-            if let Some(item) = D::get(self.world, entity) {
-                return Some(item);
-            }
-        }
-
-        None
+        self.next_with_entity().map(|(_, item)| item)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         // 驱动 Storage 的剩余实体数是结果数的上界。
         (0, Some(self.entities.len()))
+    }
+}
+
+impl<'w, D: QueryData> Iterator for QueryIterWithEntities<'w, D> {
+    type Item = (EntityId, D::Item<'w>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next_with_entity()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
     }
 }
 
@@ -392,25 +443,42 @@ impl<'w, D: QueryDataMut> QueryMut<'w, D> {
     ///
     /// 回调中的引用只在本次调用内有效；如果需要在回调外保存结果，
     /// 请保存拷贝而不是引用。
-    pub fn for_each<F>(self, mut f: F)
+    pub fn for_each<F>(&mut self, mut f: F)
     where
         F: for<'a> FnMut(D::Item<'a>),
     {
-        let Some(mut storages) = self.storages else {
+        self.for_each_impl(|_, item| f(item));
+    }
+
+    /// 与 [`QueryMut::for_each`] 相同，但额外把实体 ID 传给回调。
+    pub fn for_each_with_entity<F>(&mut self, f: F)
+    where
+        F: for<'a> FnMut(EntityId, D::Item<'a>),
+    {
+        self.for_each_impl(f);
+    }
+
+    fn for_each_impl<F>(&mut self, mut f: F)
+    where
+        F: for<'a> FnMut(EntityId, D::Item<'a>),
+    {
+        let Some(storages) = self.storages.as_mut() else {
             return;
         };
 
-        for entity in self.entities {
-            if let Some(item) = D::get(&mut storages, entity) {
-                f(item);
+        for &entity in &self.entities {
+            if let Some(item) = D::get(storages, entity) {
+                f(entity, item);
             }
         }
     }
 
-    /// 本次查询的驱动实体列表。
+    /// 驱动 Storage 中的实体列表，**不保证**每个实体都拥有查询的全部组件。
     ///
-    /// 结构变更在查询存活期间被禁止，因此这个列表是稳定的。
-    pub fn entities(&self) -> &[EntityId] {
+    /// 列表来自实体数最少的那个 Storage，因此其中可能包含缺少其它组件的实体；
+    /// 对这类实体 [`QueryMut::get`] 会返回 [`None`]。结构变更在查询存活期间
+    /// 被禁止，所以这个列表是稳定的。
+    pub fn driver_entities(&self) -> &[EntityId] {
         &self.entities
     }
 }
@@ -573,36 +641,72 @@ mod tests {
 
         world.insert(a, Position { x: 1.0, y: 1.0 });
         world.insert(a, Velocity { x: 2.0, y: 2.0 });
+        world.insert(a, Acceleration { x: 3.0, y: 3.0 });
 
-        world.insert(b, Position { x: 3.0, y: 3.0 });
-        world.insert(b, Velocity { x: 4.0, y: 4.0 });
+        world.insert(b, Position { x: 4.0, y: 4.0 });
+        world.insert(b, Velocity { x: 5.0, y: 5.0 });
+        world.insert(b, Acceleration { x: 6.0, y: 6.0 });
 
-        let count = world
-            .query::<(&Position, &Velocity, &Position)>()
+        let sums: Vec<_> = world
+            .query::<(&Position, &Velocity, &Acceleration)>()
             .iter()
-            .count();
+            .map(|(position, velocity, acceleration)| position.x + velocity.x + acceleration.x)
+            .collect();
 
-        assert_eq!(count, 2);
+        assert_eq!(sums.len(), 2);
+        assert!(sums.contains(&6.0));
+        assert!(sums.contains(&15.0));
     }
 
     #[test]
-    fn query_iter_does_not_yield_duplicates() {
+    fn query_iter_allows_duplicate_read_components() {
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+
+        // 只读查询允许重复类型，得到的是同一个组件的多个共享引用。
+        let tuple = world.query::<(&Position, &Position)>().iter().next();
+
+        let (first, second) = tuple.expect("entity should match");
+
+        assert_eq!(first, second);
+        assert!(std::ptr::eq(first, second));
+    }
+
+    #[test]
+    fn query_iter_is_empty_when_a_tuple_storage_is_missing() {
         let mut world = World::new();
 
-        let entities: Vec<_> = (0..8).map(|_| world.spawn()).collect();
+        // Position 的 Storage 存在且非空，Velocity 从未插入过。
+        let entity = world.spawn();
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
 
-        for &entity in &entities {
-            world.insert(entity, Position { x: 1.0, y: 2.0 });
-            world.insert(entity, Velocity { x: 3.0, y: 4.0 });
-        }
+        assert_eq!(world.query::<(&Position, &Velocity)>().iter().count(), 0);
+    }
 
-        let slots: Vec<_> = world
+    #[test]
+    fn query_iter_with_entities_pairs_entity_with_item() {
+        let mut world = World::new();
+
+        let a = world.spawn();
+        let b = world.spawn();
+        let c = world.spawn();
+
+        world.insert(a, Position { x: 1.0, y: 0.0 });
+        world.insert(b, Position { x: 2.0, y: 0.0 });
+        world.insert(c, Position { x: 3.0, y: 0.0 });
+        world.insert(b, Velocity { x: 0.0, y: 0.0 });
+
+        let mut pairs: Vec<_> = world
             .query::<(&Position, &Velocity)>()
-            .iter()
-            .map(|(_, _)| ())
+            .iter_with_entities()
+            .map(|(entity, (position, _))| (entity, position.x))
             .collect();
 
-        assert_eq!(slots.len(), entities.len());
+        pairs.sort_by_key(|(entity, _)| entity.as_u32());
+
+        assert_eq!(pairs, vec![(b, 2.0)]);
     }
 
     #[test]
@@ -704,6 +808,50 @@ mod tests {
     }
 
     #[test]
+    fn query_mut_for_each_can_run_multiple_times() {
+        let mut world = World::new();
+
+        let entity = world.spawn();
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+
+        let mut query = world.query_mut::<&mut Position>();
+
+        query.for_each(|position| position.x += 1.0);
+        query.for_each(|position| position.y += 1.0);
+
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 2.0, y: 3.0 })
+        );
+    }
+
+    #[test]
+    fn query_mut_for_each_with_entity_reports_entities() {
+        let mut world = World::new();
+
+        let a = world.spawn();
+        let b = world.spawn();
+        let c = world.spawn();
+
+        world.insert(a, Position { x: 1.0, y: 0.0 });
+        world.insert(b, Position { x: 2.0, y: 0.0 });
+        world.insert(c, Position { x: 3.0, y: 0.0 });
+        world.insert(b, Velocity { x: 0.0, y: 0.0 });
+
+        let mut seen = Vec::new();
+
+        world
+            .query_mut::<(&Position, &mut Velocity)>()
+            .for_each_with_entity(|entity, (position, velocity)| {
+                velocity.x = position.x;
+                seen.push(entity);
+            });
+
+        assert_eq!(seen, vec![b]);
+        assert_eq!(world.get::<Velocity>(b), Some(&Velocity { x: 2.0, y: 0.0 }));
+    }
+
+    #[test]
     fn query_mut_mixed_read_write() {
         let mut world = World::new();
         let entity = world.spawn();
@@ -793,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn query_mut_entities_lists_driver_entities() {
+    fn query_mut_driver_entities_lists_driver_entities() {
         let mut world = World::new();
 
         let entities: Vec<_> = (0..3).map(|_| world.spawn()).collect();
@@ -803,13 +951,36 @@ mod tests {
         }
 
         let query = world.query_mut::<&mut Position>();
-        let mut listed = query.entities().to_vec();
+        let mut listed = query.driver_entities().to_vec();
         listed.sort_by_key(|entity| entity.as_u32());
 
         let mut expected = entities.clone();
         expected.sort_by_key(|entity| entity.as_u32());
 
         assert_eq!(listed, expected);
+    }
+
+    #[test]
+    fn query_mut_driver_entities_may_include_entities_missing_components() {
+        let mut world = World::new();
+
+        let a = world.spawn();
+        let b = world.spawn();
+        let c = world.spawn();
+
+        // Position 与 Velocity 各有两个实体，平局按元组顺序选 Position 驱动。
+        world.insert(a, Position { x: 1.0, y: 0.0 });
+        world.insert(b, Position { x: 2.0, y: 0.0 });
+        world.insert(b, Velocity { x: 0.0, y: 0.0 });
+        world.insert(c, Velocity { x: 0.0, y: 0.0 });
+
+        let mut query = world.query_mut::<(&Position, &mut Velocity)>();
+        let listed = query.driver_entities().to_vec();
+
+        // 驱动列表包含 a，但 a 没有 Velocity，get 必须返回 None。
+        assert!(listed.contains(&a));
+        assert!(query.get(a).is_none());
+        assert!(query.get(b).is_some());
     }
 
     #[test]

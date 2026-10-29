@@ -173,7 +173,7 @@ impl World {
         &self.components
     }
 
-    pub fn query<D: QueryData>(&self) -> Query<'_, D> {
+    pub(crate) fn query<D: QueryData>(&self) -> Query<'_, D> {
         Query::new(self)
     }
 
