@@ -39,7 +39,7 @@
 
 ## 参考资源
 
-[Mastering-Graphics-Programming-with-Vulkan](https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan)
+- [Mastering-Graphics-Programming-with-Vulkan](https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan)
 - Gregory, Jason. *Game Engine Architecture (2nd Edition)*. A K Peters/CRC Press, 2014. [ISBN: 9781466560017](https://books.google.com/books?id=MCQbBAAAQBAJ).
 - Graham Sellers, with contributions from John Kessenich. *Vulkan Programming Guide: The Official Guide to Learning Vulkan*. Addison-Wesley Professional, 2016. [ISBN: 9780134464688](https://www.informit.com/store/vulkan-programming-guide-the-official-guide-to-learning-9780134464688).
-- Graham Sellers, Richard S. Wright Jr., and Nicholas Haemel. *OpenGL SuperBible: Comprehensive Tutorial and Reference (7th Edition)*. Addison-Wesley Professional, 2015. ISBN: 9780672337475.
+- Graham Sellers, Richard S. Wright Jr., and Nicholas Haemel. *OpenGL SuperBible: Comprehensive Tutorial and Reference (7th Edition)*. Addison-Wesley Professional, 2015. [ISBN: 9780672337475](https://www.informit.com/store/opengl-superbible-comprehensive-tutorial-and-reference-9780672337475).
