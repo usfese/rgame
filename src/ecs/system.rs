@@ -144,7 +144,7 @@ impl<T: Component> QueryDataMut for &mut T {
 
     #[inline]
     fn access(access: &mut Access) {
-        access.add_read(TypeId::of::<T>());
+        access.add_write(TypeId::of::<T>());
     }
 }
 
@@ -179,7 +179,7 @@ impl<T: Component> QueryDataMut for &T {
 
     #[inline]
     fn access(access: &mut Access) {
-        access.add_write(TypeId::of::<T>());
+        access.add_read(TypeId::of::<T>());
     }
 }
 

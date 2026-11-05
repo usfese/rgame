@@ -1,3 +1,7 @@
+//! 字符串ID子系统
+//!
+//! 类似于Unreal的FName那种
+//! 目前好像用处不大
 use std::{
     collections::HashMap,
     sync::{OnceLock, RwLock},

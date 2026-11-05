@@ -28,18 +28,18 @@ impl Access {
     }
 
     pub(crate) fn add_read(&mut self, id: TypeId) {
-        &self.reads.push(id);
+        self.reads.push(id);
     }
 
     pub(crate) fn add_write(&mut self, id: TypeId) {
-        &self.writes.push(id);
+        self.writes.push(id);
     }
 
     pub fn reads(&self) -> &Vec<TypeId> {
-        &self.reads
+        &(self.reads)
     }
 
     pub fn writes(&self) -> &Vec<TypeId> {
-        &self.writes
+        &(self.writes)
     }
 }
