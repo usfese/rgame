@@ -15,13 +15,24 @@ impl Access {
         self.reads.push(TypeId::of::<T>());
         self
     }
+
     pub fn write<T: 'static>(mut self) -> Self {
         self.writes.push(TypeId::of::<T>());
         self
     }
+
+    // 合并access
     pub fn merge(&mut self, other: &Access) {
         self.reads.extend_from_slice(&other.reads);
         self.writes.extend_from_slice(&other.writes);
+    }
+
+    pub(crate) fn add_read(&mut self, id: TypeId) {
+        &self.reads.push(id);
+    }
+
+    pub(crate) fn add_write(&mut self, id: TypeId) {
+        &self.writes.push(id);
     }
 
     pub fn reads(&self) -> &Vec<TypeId> {
