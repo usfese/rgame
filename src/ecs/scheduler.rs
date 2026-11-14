@@ -1,11 +1,11 @@
 use crate::ecs::{access::Access, command::WorldCommands, system::*, world::World};
 
-pub struct Schedule {
+pub struct Scheduler {
     systems: [Vec<System>; PHASE_COUNT],
     sorted: bool,
 }
 
-impl Schedule {
+impl Scheduler {
     pub fn new() -> Self {
         Self {
             systems: std::array::from_fn(|_| Vec::new()),
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn system_can_spawn_through_commands() {
         let mut world = World::new();
-        let mut schedule = Schedule::new();
+        let mut schedule = Scheduler::new();
 
         schedule.add_system::<&Tag, _>(
             "spawn",
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn commands_are_applied_between_systems() {
         let mut world = World::new();
-        let mut schedule = Schedule::new();
+        let mut schedule = Scheduler::new();
 
         schedule.add_system::<&Tag, _>(
             "spawn",
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn commands_are_drained_after_each_run() {
         let mut world = World::new();
-        let mut schedule = Schedule::new();
+        let mut schedule = Scheduler::new();
 
         schedule.add_system::<&Tag, _>(
             "spawn",
@@ -179,7 +179,7 @@ mod tests {
         let entity = world.spawn();
         world.insert(entity, Tag(1));
 
-        let mut schedule = Schedule::new();
+        let mut schedule = Scheduler::new();
 
         schedule.add_system::<&Tag, _>(
             "despawn",
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn add_system_merges_query_and_extra_access() {
-        let mut schedule = Schedule::new();
+        let mut schedule = Scheduler::new();
 
         schedule.add_system::<(&Velocity, &mut Position), _>(
             "movement",
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn add_system_stores_system_in_phase() {
-        let mut schedule = Schedule::new();
+        let mut schedule = Scheduler::new();
 
         schedule.add_system::<&Tag, _>("input", Phase::Input, Access::new(), |_, _| {});
         schedule.add_system::<&Tag, _>("update", Phase::Update, Access::new(), |_, _| {});

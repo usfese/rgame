@@ -1,6 +1,9 @@
 //! 游戏模块。
 //! 包含[`Game`]。
-use crate::renderer::Renderer;
+use crate::{
+    ecs::{scheduler::Scheduler, world::World},
+    renderer::Renderer,
+};
 use winit::{
     application::ApplicationHandler,
     event::{KeyEvent, WindowEvent},
@@ -12,6 +15,8 @@ use winit::{
 pub struct Game {
     name: String,
     is_running: bool,
+    scheduler: Scheduler,
+    world: World,
     renderer: Option<Renderer>,
 }
 impl Game {
@@ -20,9 +25,35 @@ impl Game {
         Game {
             name: s_name,
             is_running: false,
+            scheduler: Scheduler::new(),
+            world: World::new(),
             renderer: None,
         }
     }
+
+    pub fn new_with_world(name: &str, world: World) -> Game {
+        let s_name = String::from(name);
+        Game {
+            name: s_name,
+            is_running: false,
+            scheduler: Scheduler::new(),
+            world: world,
+            renderer: None,
+        }
+    }
+
+    pub fn replace_world(&mut self, world: World) -> World {
+        std::mem::replace(&mut self.world, world)
+    }
+
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
     fn handle_input(&mut self) {
         todo!();
     }

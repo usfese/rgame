@@ -1,3 +1,4 @@
+//! 表示读写权限的结构。其中WorldStructure不是具体结构，而用来表示System将对World进行操作。
 use std::any::TypeId;
 
 #[derive(Default, Clone, Debug)]
