@@ -9,6 +9,8 @@
 //!
 //! 目前按注册顺序串行执行，不做帧图或依赖排序。
 
+pub mod clear;
+
 use ash::{Device, vk};
 
 /// 单个 pass 执行时可见的帧信息。

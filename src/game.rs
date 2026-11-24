@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use crate::{
     ecs::{scheduler::Scheduler, world::World},
-    render::{pass::PassChain, passes::ClearPass},
-    renderer::Renderer,
+    render::{
+        pass::{PassChain, clear::ClearPass},
+        renderer::Renderer,
+    },
 };
 use winit::{
     application::ApplicationHandler,

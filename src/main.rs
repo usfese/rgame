@@ -1,7 +1,6 @@
 mod ecs;
 mod game;
 mod render;
-mod renderer;
 mod string_id;
 
 use crate::game::Game;
