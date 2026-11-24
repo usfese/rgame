@@ -10,6 +10,7 @@
 //! 目前按注册顺序串行执行，不做帧图或依赖排序。
 
 pub mod clear;
+pub mod triangle;
 
 use ash::{Device, vk};
 
@@ -57,8 +58,8 @@ pub trait Pass {
     /// `Render` 类型调用时，动态渲染已经开始，颜色附件已按 `load` 绑定。
     fn execute(&mut self, ctx: &mut FrameContext<'_>);
 
-    /// swapchain 重建后回调，用于重建分辨率相关资源。
-    fn on_resize(&mut self, _extent: vk::Extent2D) {}
+    /// 设备空闲且 swapchain 重建后调用，可释放并重建相关资源。
+    fn on_resize(&mut self, _extent: vk::Extent2D, _format: vk::Format) {}
 }
 
 /// 按注册顺序保存的 pass 列表。
@@ -80,9 +81,9 @@ impl PassChain {
         self.passes.iter_mut()
     }
 
-    pub fn on_resize(&mut self, extent: vk::Extent2D) {
+    pub fn on_resize(&mut self, extent: vk::Extent2D, format: vk::Format) {
         for pass in &mut self.passes {
-            pass.on_resize(extent);
+            pass.on_resize(extent, format);
         }
     }
 }

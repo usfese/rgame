@@ -229,15 +229,16 @@ impl Renderer {
             renderer.create_sync_objects()?;
 
             let initial_extent = renderer.swapchain_extent;
-            renderer.passes.on_resize(initial_extent);
+            renderer.passes.on_resize(initial_extent, renderer.swapchain_format);
 
             Ok(renderer)
         }
     }
 
-    /// 访问 pass 链，用来注册或移除 pass。
-    pub fn passes_mut(&mut self) -> &mut PassChain {
-        &mut self.passes
+    /// 等待设备空闲后替换 pass 链，确保旧 pass 的 GPU 资源不再被使用。
+    pub fn set_passes(&mut self, passes: PassChain) {
+        unsafe { self.device.device_wait_idle().expect("device idle") };
+        self.passes = passes;
     }
 
     pub fn extent(&self) -> vk::Extent2D {
@@ -425,7 +426,7 @@ impl Renderer {
                 .expect("recreate render complete semaphores");
 
             let extent = self.swapchain_extent;
-            self.passes.on_resize(extent);
+            self.passes.on_resize(extent, self.swapchain_format);
         }
     }
 
@@ -502,9 +503,27 @@ impl Renderer {
                 color_format: self.swapchain_format,
             };
 
+            let mut rendered_color = false;
             for pass in self.passes.iter_mut() {
                 match pass.kind() {
                     PassKind::Render { load, clear_color } => {
+                        if rendered_color {
+                            let barrier = vk::MemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                                .dst_access_mask(
+                                    vk::AccessFlags::COLOR_ATTACHMENT_READ
+                                        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                );
+                            device.cmd_pipeline_barrier(
+                                command_buffer,
+                                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                vk::DependencyFlags::empty(),
+                                &[barrier],
+                                &[],
+                                &[],
+                            );
+                        }
                         let attachment = vk::RenderingAttachmentInfo::default()
                             .image_view(color_view)
                             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -527,6 +546,7 @@ impl Renderer {
                         device.cmd_begin_rendering(command_buffer, &rendering_info);
                         pass.execute(&mut ctx);
                         device.cmd_end_rendering(command_buffer);
+                        rendered_color = true;
                     }
                     PassKind::Compute | PassKind::Custom => pass.execute(&mut ctx),
                 }
@@ -584,6 +604,7 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            drop(std::mem::take(&mut self.passes));
 
             if !self.pool.is_null() {
                 self.device.destroy_command_pool(self.pool, None);

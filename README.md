@@ -16,6 +16,7 @@
 ### 渲染器
 
 - [x] 渲染基本窗口
+- [x] 动态渲染彩色三角形
 - [ ] forward+模块化可插拔渲染器架构
 - [ ] 帧图
 - [ ] 无绑定纹理
@@ -30,6 +31,13 @@
 - [ ] 光追管线
 - [ ] 全局光照
 - [ ] 光追反射
+
+三角形 shader 源码位于 `src/render/pass/shaders/`。修改后，用以下命令更新随程序内嵌的 SPIR-V：
+
+```sh
+glslc --target-env=vulkan1.3 src/render/pass/shaders/triangle.vert -o src/render/pass/shaders/triangle.vert.spv
+glslc --target-env=vulkan1.3 src/render/pass/shaders/triangle.frag -o src/render/pass/shaders/triangle.frag.spv
+```
 
 ### 底层技术支持
 

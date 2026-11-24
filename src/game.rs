@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::{
     ecs::{scheduler::Scheduler, world::World},
     render::{
-        pass::{PassChain, clear::ClearPass},
+        pass::{PassChain, clear::ClearPass, triangle::TrianglePass},
         renderer::Renderer,
     },
 };
@@ -22,8 +22,8 @@ pub struct Game {
     name: String,
     scheduler: Scheduler,
     world: World,
-    window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    window: Option<Arc<Window>>,
 }
 impl Game {
     pub fn new(name: &str) -> Game {
@@ -77,7 +77,8 @@ impl ApplicationHandler for Game {
 
         let mut passes = PassChain::new();
         passes.push(ClearPass::new([0.05, 0.07, 0.12, 1.0]));
-        *renderer.passes_mut() = passes;
+        passes.push(TrianglePass::new());
+        renderer.set_passes(passes);
 
         self.window = Some(Arc::clone(&window));
         self.renderer = Some(renderer);
