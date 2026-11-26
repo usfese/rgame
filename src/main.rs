@@ -1,4 +1,5 @@
 mod ecs;
+mod event;
 mod game;
 mod render;
 mod string_id;

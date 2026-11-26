@@ -13,7 +13,6 @@ pub trait Component: Any + Send + Sync {}
 
 pub(crate) trait ErasedStorage: Any + Send + Sync {
     fn remove_entity(&mut self, entity: EntityId);
-
     fn as_any(&self) -> &dyn Any;
     fn as_mut_any(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
